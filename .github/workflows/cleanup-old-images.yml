@@ -1,0 +1,57 @@
+name: 清理超过 7 天的图片
+
+# 每天检查一次，删除“上传（提交）时间”超过 7 天的图片。
+# 判定依据：每个图片文件最后一次提交的时间（PicGo 上传即一次提交，所以等于上传时间）。
+on:
+  schedule:
+    # 每天 UTC 18:00（北京时间次日凌晨 02:00）运行一次
+    - cron: '0 18 * * *'
+  workflow_dispatch: {}   # 也支持在 Actions 页面手动点击运行
+
+permissions:
+  contents: write   # 允许工作流把删除结果推回仓库
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库（含完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史才能读到每个文件的提交时间
+
+      - name: 删除超过 7 天的图片
+        run: |
+          set -euo pipefail
+          # 阈值：7 天（单位：秒）。想改天数只需修改下面的 7。
+          MAX_AGE_DAYS=7
+          NOW=$(date +%s)
+          THRESHOLD=$(( NOW - MAX_AGE_DAYS * 86400 ))
+
+          deleted=0
+          # 只扫描仓库根目录下的图片文件（PicGo 默认上传到根目录）
+          shopt -s nullglob nocaseglob
+          for f in *.png *.jpg *.jpeg *.gif *.webp *.bmp *.svg; do
+            # 取该文件最后一次提交的 Unix 时间戳
+            commit_ts=$(git log -1 --format=%ct -- "$f")
+            if [ -z "$commit_ts" ]; then
+              continue
+            fi
+            if [ "$commit_ts" -lt "$THRESHOLD" ]; then
+              echo "删除（$(( (NOW - commit_ts) / 86400 )) 天前上传）：$f"
+              git rm --quiet "$f"
+              deleted=$((deleted + 1))
+            fi
+          done
+
+          echo "本次共删除 $deleted 个文件。"
+          echo "deleted=$deleted" >> "$GITHUB_ENV"
+
+      - name: 提交并推送删除结果
+        if: env.deleted != '0'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "自动清理：删除超过 7 天的图片（${deleted} 个）"
+          git push
